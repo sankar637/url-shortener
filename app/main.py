@@ -1,35 +1,32 @@
 import os
 
-from fastapi import Depends, FastAPI, HTTPException, Query, status
+from dotenv import load_dotenv
+from fastapi import Depends, FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
 from sqlalchemy.orm import Session
 
 from .database import Base, engine, get_db
 from .models import URL
-from .schemas import URLCreate, URLResponse, URLHistoryResponse
+from .schemas import URLCreate, URLResponse
 from .utils import generate_short_code
 
+load_dotenv()
 
 # Create database tables
 Base.metadata.create_all(bind=engine)
 
-
-# FastAPI application
 app = FastAPI(
     title="URL Shortener API",
-    description="URL Shortener API built using FastAPI and PostgreSQL.",
-    version="2.0.0"
+    description="A URL Shortener API built using FastAPI and PostgreSQL.",
+    version="1.0.0"
 )
 
-
-# ---------------------------------------------------------
 # CORS
-# ---------------------------------------------------------
-
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
+        "https://url-shortener-theta-topaz.vercel.app",
         "http://localhost:5173",
         "http://127.0.0.1:5173",
     ],
@@ -38,20 +35,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-
-# ---------------------------------------------------------
-# Configuration
-# ---------------------------------------------------------
-
 BASE_URL = os.getenv(
     "BASE_URL",
     "http://localhost:8000"
 )
 
-
-# ---------------------------------------------------------
-# Root
-# ---------------------------------------------------------
 
 @app.get("/")
 def root():
@@ -61,10 +49,7 @@ def root():
     }
 
 
-# ---------------------------------------------------------
-# Create Short URL
-# ---------------------------------------------------------
-
+# Create short URL
 @app.post(
     "/shorten",
     response_model=URLResponse,
@@ -74,15 +59,10 @@ def shorten_url(
     url_data: URLCreate,
     db: Session = Depends(get_db)
 ):
-    """
-    Create a shortened URL.
-    """
-
     original_url = str(url_data.url)
 
     # Generate unique short code
     while True:
-
         short_code = generate_short_code()
 
         existing_url = (
@@ -94,11 +74,9 @@ def shorten_url(
         if not existing_url:
             break
 
-    # Create database record
     new_url = URL(
         original_url=original_url,
-        short_code=short_code,
-        click_count=0
+        short_code=short_code
     )
 
     db.add(new_url)
@@ -113,85 +91,48 @@ def shorten_url(
     }
 
 
-# ---------------------------------------------------------
-# URL History
-# ---------------------------------------------------------
-
-@app.get(
-    "/urls",
-    response_model=list[URLHistoryResponse]
-)
+# Get URL history
+@app.get("/urls")
 def get_urls(
-    search: str | None = Query(
-        default=None,
-        description="Search by original URL or short code"
-    ),
     db: Session = Depends(get_db)
 ):
-    """
-    Get URL history.
-    Supports search.
-    """
-
-    query = db.query(URL)
-
-    if search:
-        search_value = f"%{search}%"
-
-        query = query.filter(
-            (URL.original_url.ilike(search_value))
-            |
-            (URL.short_code.ilike(search_value))
-        )
-
     urls = (
-        query
+        db.query(URL)
         .order_by(URL.created_at.desc())
         .all()
     )
 
-    result = []
-
-    for url in urls:
-
-        result.append({
+    return [
+        {
             "id": url.id,
             "original_url": url.original_url,
             "short_code": url.short_code,
             "short_url": f"{BASE_URL}/{url.short_code}",
-            "created_at": url.created_at,
-            "click_count": url.click_count
-        })
+            "created_at": url.created_at
+        }
+        for url in urls
+    ]
 
-    return result
 
-
-# ---------------------------------------------------------
 # Delete URL
-# ---------------------------------------------------------
-
 @app.delete("/urls/{url_id}")
 def delete_url(
     url_id: int,
     db: Session = Depends(get_db)
 ):
-    """
-    Delete a shortened URL.
-    """
-
-    url = (
+    url_record = (
         db.query(URL)
         .filter(URL.id == url_id)
         .first()
     )
 
-    if not url:
+    if not url_record:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="URL not found"
         )
 
-    db.delete(url)
+    db.delete(url_record)
     db.commit()
 
     return {
@@ -199,20 +140,12 @@ def delete_url(
     }
 
 
-# ---------------------------------------------------------
-# Redirect Short URL
-# ---------------------------------------------------------
-
+# Redirect short URL
 @app.get("/{short_code}")
 def redirect_to_original(
     short_code: str,
     db: Session = Depends(get_db)
 ):
-    """
-    Redirect short URL to original URL
-    and increase click count.
-    """
-
     url_record = (
         db.query(URL)
         .filter(URL.short_code == short_code)
@@ -220,16 +153,10 @@ def redirect_to_original(
     )
 
     if not url_record:
-
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Short URL not found"
         )
-
-    # Increase visit count
-    url_record.click_count += 1
-
-    db.commit()
 
     return RedirectResponse(
         url=url_record.original_url,
